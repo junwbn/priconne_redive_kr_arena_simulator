@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>PC로 사진 보내기</title>
+<style>
+  :root { --blue: #0073e9; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; background: #f5f7fa; color: #222; }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p { color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 18px; }
+  #status { padding: 10px 12px; border-radius: 8px; font-size: 14px; font-weight: 600; background: #e9ecef; margin-bottom: 16px; }
+  #status.ok { background: #d4edda; color: #155724; }
+  #status.err { background: #f8d7da; color: #721c24; }
+  label.pick { display: block; text-align: center; background: var(--blue); color: #fff; font-size: 18px; font-weight: 700; padding: 18px; border-radius: 12px; cursor: pointer; }
+  label.pick.off { background: #adb5bd; pointer-events: none; }
+  input[type=file] { display: none; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 18px; }
+  .item { position: relative; aspect-ratio: 1; border-radius: 8px; background: #ddd center / cover no-repeat; }
+  .item span { position: absolute; left: 0; right: 0; bottom: 0; font-size: 12px; text-align: center; color: #fff; background: rgba(0,0,0,.5); line-height: 20px; border-radius: 0 0 8px 8px; }
+  .item.done span { background: rgba(40,167,69,.9); }
+  .item.fail span { background: rgba(220,53,69,.9); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📲 PC로 사진 보내기</h1>
+  <p>고른 사진은 PC의 쿠팡 리뷰 창으로 바로 들어가요. 중간 서버에 저장되지 않아요.</p>
+  <div id="status">PC에 연결하는 중...</div>
+  <label class="pick off" id="pick">사진 고르기<input type="file" id="file" accept="image/*" multiple></label>
+  <div class="grid" id="grid"></div>
+</div>
+<script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
+<script>
+const pcId = decodeURIComponent(location.hash.slice(1));
+const statusEl = document.getElementById('status');
+const pick = document.getElementById('pick');
+const grid = document.getElementById('grid');
+const setStatus = (t, cls = '') => { statusEl.textContent = t; statusEl.className = cls; };
+let conn = null, seq = 0, sent = 0;
+const pending = new Map();
+
+if (!pcId || !/^cprv-[0-9a-f]+$/.test(pcId)) {
+  setStatus('PC 리뷰 창의 QR 코드를 다시 찍어 주세요.', 'err');
+} else {
+  const peer = new Peer({ debug: 1 });
+  let connectTimer = null;
+  const connect = () => {
+    conn = peer.connect(pcId, { reliable: true });
+    clearTimeout(connectTimer);
+    connectTimer = setTimeout(() => {
+      if (!conn || !conn.open) setStatus('PC에 연결이 안 돼요. 폰을 PC와 같은 와이파이에 연결하고, 리뷰 창의 QR을 다시 찍어 주세요.', 'err');
+    }, 20000);
+    conn.on('open', () => {
+      clearTimeout(connectTimer);
+      setStatus(sent ? `연결됨 · ${sent}장 보냄` : '연결됨! 사진을 골라 주세요.', 'ok');
+      pick.classList.remove('off');
+    });
+    conn.on('data', (d) => {
+      if (d && d.type === 'ack' && pending.has(d.seq)) {
+        const el = pending.get(d.seq); pending.delete(d.seq);
+        el.classList.add('done'); el.querySelector('span').textContent = '✓ 보냄';
+        sent++; setStatus(`연결됨 · ${sent}장 보냄`, 'ok');
+      }
+    });
+    conn.on('close', () => { pick.classList.add('off'); setStatus('PC와 연결이 끊겼어요. 리뷰 창이 닫혔다면 QR을 다시 찍어 주세요.', 'err'); });
+  };
+  peer.on('open', connect);
+  peer.on('error', (e) => {
+    if (e.type === 'peer-unavailable') setStatus('PC 리뷰 창을 찾지 못했어요. 리뷰 창의 QR을 다시 찍어 주세요.', 'err');
+    else setStatus('연결 오류: ' + (e.type || e.message), 'err');
+  });
+}
+
+// 폰 사진(보통 3~4천 px, 수 MB)을 긴 변 1920px JPEG로 줄여서 보냄
+async function shrink(file) {
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch (e) {
+    const url = URL.createObjectURL(file);
+    bmp = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = url; });
+  }
+  const scale = Math.min(1, 1920 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  return await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
+}
+
+document.getElementById('file').addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files || []);
+  e.target.value = '';
+  for (const f of files) {
+    const el = document.createElement('div');
+    el.className = 'item';
+    el.innerHTML = '<span>준비 중</span>';
+    el.style.backgroundImage = `url("${URL.createObjectURL(f)}")`;
+    grid.prepend(el);
+    try {
+      const blob = await shrink(f);
+      if (!conn || !conn.open) throw new Error('연결 끊김');
+      const s = ++seq;
+      pending.set(s, el);
+      el.querySelector('span').textContent = '보내는 중';
+      conn.send({ type: 'photo', seq: s, name: `phone_${Date.now()}_${s}.jpg`, mime: 'image/jpeg', buf: await blob.arrayBuffer() });
+    } catch (err) {
+      el.classList.add('fail'); el.querySelector('span').textContent = '실패';
+    }
+  }
+});
+</script>
+</body>
+</html>
