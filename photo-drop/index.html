@@ -83,6 +83,9 @@ const pending = new Map();
 
 if (!pcId || !/^cprv-[0-9a-f]+$/.test(pcId)) {
   setStatus('PC 리뷰 창의 QR 코드를 다시 찍어 주세요.', 'err');
+} else if (relayKeyText) {
+  // 새 버전 PC 확장: 직접 연결을 기다리지 않고 바로 중계 방식으로 보냄 (사용자 집 와이파이에서 직접 연결이 안 됨)
+  enableRelay();
 } else {
   const peer = new Peer({ debug: 1 });
   // 연결 서버 자체에 못 붙는 경우도 대비: 7초 안에 직접 연결이 안 되면 중계 방식으로
